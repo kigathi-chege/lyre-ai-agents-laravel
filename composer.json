@@ -1,0 +1,32 @@
+{
+  "name": "lyre/ai-agents",
+  "description": "Forward-only Agents/Bots orchestration on top of Laravel + OpenAI Responses API.",
+  "type": "library",
+  "license": "MIT",
+  "require": {
+    "php": "^8.1",
+    "illuminate/support": "^10.0|^11.0",
+    "illuminate/http": "^10.0|^11.0",
+    "illuminate/database": "^10.0|^11.0",
+    "illuminate/cache": "^10.0|^11.0",
+    "illuminate/events": "^10.0|^11.0"
+  },
+  "suggest": {
+    "laravel/ai": "Optional: install if you want to integrate package internals with Laravel AI facade APIs."
+  },
+  "autoload": {
+    "psr-4": {
+      "Lyre\\AiAgents\\": "src/"
+    }
+  },
+  "extra": {
+    "laravel": {
+      "providers": [
+        "Lyre\\AiAgents\\AiAgentsServiceProvider"
+      ],
+      "aliases": {
+        "Agents": "Lyre\\AiAgents\\Facades\\Agents"
+      }
+    }
+  }
+}
