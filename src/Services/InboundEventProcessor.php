@@ -22,10 +22,10 @@ class InboundEventProcessor
         protected CostCalculator $costCalculator,
     ) {}
 
-    public function process(Event $event): void
+    public function process(Event $event): Event
     {
         if ($event->status === 'processed') {
-            return;
+            return $event;
         }
 
         DB::transaction(function () use ($event) {
@@ -48,6 +48,7 @@ class InboundEventProcessor
                 'processed_at' => now(),
                 'processing_error' => null,
             ]);
+            return Event::query()->findOrFail($event->id);
         } catch (Throwable $e) {
             Event::query()->whereKey($event->id)->update([
                 'status' => 'failed',
@@ -94,6 +95,11 @@ class InboundEventProcessor
 
         if (!empty($payload['status']) && is_string($payload['status'])) {
             $conversation->status = $payload['status'];
+            $conversation->save();
+        }
+
+        if (!empty($payload['external_id']) && $conversation->external_id !== (string) $payload['external_id']) {
+            $conversation->external_id = (string) $payload['external_id'];
             $conversation->save();
         }
 
@@ -160,6 +166,11 @@ class InboundEventProcessor
                 'source_event_id' => $event->id,
             ])),
         ]);
+
+        if (!empty($payload['external_id']) && $conversation->external_id !== (string) $payload['external_id']) {
+            $conversation->external_id = (string) $payload['external_id'];
+            $conversation->save();
+        }
 
         Event::query()->whereKey($event->id)->update([
             'conversation_id' => $conversation->id,

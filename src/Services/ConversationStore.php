@@ -33,6 +33,17 @@ class ConversationStore
             }
         }
 
+        if (!empty($context['external_id']) && !empty($context['agent_id'])) {
+            $external = Conversation::query()
+                ->where('agent_id', $context['agent_id'])
+                ->where('external_id', (string) $context['external_id'])
+                ->orderByDesc('id')
+                ->first();
+            if ($external) {
+                return $external;
+            }
+        }
+
         $conversation = Conversation::query()->create([
             'agent_id' => $context['agent_id'],
             'user_id' => $context['user_id'] ?? null,

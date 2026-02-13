@@ -8,9 +8,12 @@ use Illuminate\Routing\Controller;
 use Illuminate\Support\Facades\Queue;
 use Lyre\AiAgents\Jobs\ProcessIngestedEvent;
 use Lyre\AiAgents\Models\Event;
+use Lyre\AiAgents\Services\InboundEventProcessor;
 
 class EventIngestionController extends Controller
 {
+    public function __construct(protected InboundEventProcessor $processor) {}
+
     public function store(Request $request): JsonResponse
     {
         $payload = $request->validate([
@@ -22,6 +25,7 @@ class EventIngestionController extends Controller
             'metadata' => ['nullable', 'array'],
             'occurred_at' => ['nullable', 'date'],
             'idempotency_key' => ['nullable', 'string', 'max:191'],
+            'process_now' => ['nullable', 'boolean'],
         ]);
 
         $dedupeKey = (string) ($payload['idempotency_key'] ?? '');
@@ -51,7 +55,9 @@ class EventIngestionController extends Controller
             ]
         );
 
-        if (in_array($event->status, ['pending', 'failed'], true)) {
+        if (($payload['process_now'] ?? false) === true) {
+            $event = $this->processor->process($event);
+        } elseif (in_array($event->status, ['pending', 'failed'], true)) {
             Queue::push(new ProcessIngestedEvent($event->id));
         }
 
@@ -59,6 +65,9 @@ class EventIngestionController extends Controller
             'id' => $event->id,
             'status' => $event->status,
             'duplicate' => !$event->wasRecentlyCreated,
+            'conversation_id' => $event->conversation_id,
+            'agent_id' => $event->agent_id,
+            'run_id' => $event->agent_run_id,
         ], $event->wasRecentlyCreated ? 201 : 202);
     }
 }
