@@ -63,11 +63,19 @@ foreach ($stream as $chunk) {
 - `Lyre\AiAgents\Events\ConversationUpdated`
 - `Lyre\AiAgents\Events\UsageRecorded`
 
-## Migration plan from `gpts`
+## Local development
 
-1. Run published migrations to create `agents`, `agent_tools`, `conversations`, `conversation_messages`, `agent_runs`, `usage_logs`, and `events`.
-2. Run migration `2026_02_13_000007_migrate_gpts_to_agents.php` to backfill agents from `gpts`.
-3. Existing `gpts` records are marked with `deprecated_at`; reads/writes should move to `agents` only.
+```json
+"repositories": [
+    {
+        "type": "path",
+        "url": "../packages/lyre-ai-agents-laravel",
+        "options": {
+            "symlink": true
+        }
+    }
+]
+```
 
 ## Frontend safety
 
