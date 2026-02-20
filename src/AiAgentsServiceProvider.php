@@ -5,13 +5,16 @@ namespace Lyre\AiAgents;
 use Illuminate\Support\Facades\Route;
 use Illuminate\Support\ServiceProvider;
 use Lyre\AiAgents\Services\AgentManager;
+use Lyre\AiAgents\Services\AgentKnowledgeService;
 use Lyre\AiAgents\Services\AgentRunner;
+use Lyre\AiAgents\Services\AgentToolResolver;
 use Lyre\AiAgents\Services\ConversationStore;
 use Lyre\AiAgents\Services\CostCalculator;
 use Lyre\AiAgents\Services\InboundEventProcessor;
 use Lyre\AiAgents\Services\OpenAIClient;
 use Lyre\AiAgents\Services\PromptTemplateResolver;
 use Lyre\AiAgents\Services\RateLimiter;
+use Lyre\AiAgents\Services\ToolUsageTracker;
 use Lyre\AiAgents\Services\ToolRegistry;
 use Lyre\AiAgents\Services\UsageTracker;
 
@@ -23,11 +26,14 @@ class AiAgentsServiceProvider extends ServiceProvider
 
         $this->app->singleton(OpenAIClient::class);
         $this->app->singleton(ToolRegistry::class);
+        $this->app->singleton(AgentToolResolver::class);
         $this->app->singleton(CostCalculator::class);
         $this->app->singleton(UsageTracker::class);
         $this->app->singleton(ConversationStore::class);
         $this->app->singleton(RateLimiter::class);
         $this->app->singleton(PromptTemplateResolver::class);
+        $this->app->singleton(ToolUsageTracker::class);
+        $this->app->singleton(AgentKnowledgeService::class);
         $this->app->singleton(InboundEventProcessor::class);
         $this->app->singleton(AgentRunner::class);
         $this->app->singleton(AgentManager::class);

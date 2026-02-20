@@ -10,6 +10,7 @@ return [
         'organization' => env('OPENAI_ORG_ID'),
         'project' => env('OPENAI_PROJECT_ID'),
         'timeout' => (int) env('AI_AGENTS_TIMEOUT', 60),
+        'assistants_beta_header' => env('AI_AGENTS_OPENAI_ASSISTANTS_BETA_HEADER', 'assistants=v2'),
     ],
 
     'default_model' => env('AI_AGENTS_DEFAULT_MODEL', 'gpt-4.1-mini'),
@@ -23,6 +24,7 @@ return [
         'conversation_messages' => env('AI_AGENTS_TABLE_CONVERSATION_MESSAGES', $prefix.'conversation_messages'),
         'agent_runs' => env('AI_AGENTS_TABLE_AGENT_RUNS', $prefix.'agent_runs'),
         'usage_logs' => env('AI_AGENTS_TABLE_USAGE_LOGS', $prefix.'usage_logs'),
+        'tool_usage_logs' => env('AI_AGENTS_TABLE_TOOL_USAGE_LOGS', $prefix.'tool_usage_logs'),
         'events' => env('AI_AGENTS_TABLE_EVENTS', $prefix.'events'),
     ],
 

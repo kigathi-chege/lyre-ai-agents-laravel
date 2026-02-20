@@ -47,4 +47,14 @@ class Agent extends Model
     {
         return $this->hasMany(UsageLog::class, 'agent_id');
     }
+
+    public function toolUsageLogs(): HasMany
+    {
+        return $this->hasMany(ToolUsageLog::class, 'agent_id');
+    }
+
+    public function agentTools(): HasMany
+    {
+        return $this->hasMany(AgentTool::class, 'agent_id');
+    }
 }

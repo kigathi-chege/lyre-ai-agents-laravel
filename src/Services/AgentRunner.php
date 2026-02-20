@@ -18,6 +18,8 @@ class AgentRunner
     public function __construct(
         protected OpenAIClient $openAIClient,
         protected ToolRegistry $toolRegistry,
+        protected AgentToolResolver $agentToolResolver,
+        protected ToolUsageTracker $toolUsageTracker,
         protected ConversationStore $conversationStore,
         protected UsageTracker $usageTracker,
         protected CostCalculator $costCalculator,
@@ -187,19 +189,15 @@ class AgentRunner
         $history = $this->conversationStore->historyForModel($conversation);
         $instructions = $this->promptTemplateResolver->resolveInstructionsForAgent($agent);
 
+        $resolvedTools = $this->agentToolResolver->resolveForAgent($agent);
         $payload = [
             'model' => $agent->model,
             'input' => $history,
-            'tools' => $this->toolRegistry->allForResponse(),
+            'tools' => $resolvedTools['response_tools'],
             'temperature' => $agent->temperature,
             'max_output_tokens' => $agent->max_output_tokens,
+            'instructions' => !empty($instructions) ? (string) $instructions : null,
         ];
-        if (!empty($instructions)) {
-            array_unshift($payload['input'], [
-                'role' => 'system',
-                'content' => [['type' => 'input_text', 'text' => (string) $instructions]],
-            ]);
-        }
 
         $buffer = '';
         $assistantText = '';
@@ -207,10 +205,13 @@ class AgentRunner
         $responseId = null;
         $outputMessageId = null;
         $completedResponse = [];
+        $allResponses = [];
+        $toolLoopExecuted = false;
 
         try {
             foreach ($this->openAIClient->streamResponse(array_filter($payload, fn ($v) => $v !== null), $clientOptions) as $chunk) {
                 $buffer .= $chunk;
+                $forwardEvents = [];
 
                 while (($pos = strpos($buffer, "\n")) !== false) {
                     $line = trim(substr($buffer, 0, $pos));
@@ -235,6 +236,7 @@ class AgentRunner
                         $assistantText .= (string) ($event['delta'] ?? '');
                     } elseif ($eventType === 'response.completed') {
                         $completedResponse = is_array($event['response'] ?? null) ? $event['response'] : [];
+                        $allResponses[] = $completedResponse;
                         $identifiers = $this->extractResponseIdentifiers($completedResponse);
                         $responseId = $identifiers['response_id'];
                         $outputMessageId = $identifiers['output_message_id'];
@@ -245,10 +247,134 @@ class AgentRunner
                             'total_tokens' => (int) ($responseUsage['total_tokens'] ?? 0),
                         ];
                     }
+
+                    $forwardEvents[] = $json;
                 }
 
-                yield $chunk;
+                foreach ($forwardEvents as $forwardEvent) {
+                    yield 'data: '.$forwardEvent."\n\n";
+                }
             }
+
+            // If the streamed response ended with tool calls, execute them and continue until assistant message is produced.
+            $pendingCalls = $this->extractFunctionCalls($completedResponse);
+            $maxToolIterations = 8;
+            $toolIteration = 0;
+            while (!empty($pendingCalls)) {
+                $toolLoopExecuted = true;
+                $toolIteration++;
+                if ($toolIteration > $maxToolIterations) {
+                    throw new \RuntimeException('Streaming tool loop exceeded iteration limit');
+                }
+
+                if (empty($responseId)) {
+                    throw new \RuntimeException('Cannot continue streamed tool call loop without response id.');
+                }
+
+                $toolOutputs = [];
+                foreach ($pendingCalls as $call) {
+                    yield 'data: '.json_encode([
+                        'type' => 'tool.call.started',
+                        'tool_name' => $call['name'] ?? null,
+                        'call_id' => $call['call_id'] ?? null,
+                    ])."\n\n";
+
+                    $execution = $this->executeToolCall(
+                        agent: $agent,
+                        call: $call,
+                        executableTools: $resolvedTools['executable_tools'],
+                        context: $context,
+                        runId: $run->id,
+                        conversationId: $conversation->id,
+                    );
+
+                    $toolOutputs[] = [
+                        'type' => 'function_call_output',
+                        'call_id' => $call['call_id'] ?? null,
+                        'output' => json_encode($execution['tool_result']),
+                    ];
+
+                    // Extra stream event so consumers can observe tool execution in-stream.
+                    yield 'data: '.json_encode([
+                        'type' => 'tool.call.completed',
+                        'tool_name' => $execution['tool_name'],
+                        'call_id' => $call['call_id'] ?? null,
+                        'result' => $execution['tool_result'],
+                        'duration_ms' => $execution['duration_ms'],
+                    ])."\n\n";
+                }
+
+                $followUpPayload = [
+                    'model' => $agent->model,
+                    'previous_response_id' => $responseId,
+                    'input' => $toolOutputs,
+                    'tools' => $resolvedTools['response_tools'],
+                    'temperature' => $agent->temperature,
+                    'max_output_tokens' => $agent->max_output_tokens,
+                    'instructions' => !empty($instructions) ? (string) $instructions : null,
+                ];
+
+                $nextResponse = [];
+                $nextBuffer = '';
+                foreach ($this->openAIClient->streamResponse(array_filter($followUpPayload, fn ($v) => $v !== null), $clientOptions) as $nextChunk) {
+                    $nextBuffer .= $nextChunk;
+                    $nextForwardEvents = [];
+
+                    while (($nextPos = strpos($nextBuffer, "\n")) !== false) {
+                        $nextLine = trim(substr($nextBuffer, 0, $nextPos));
+                        $nextBuffer = substr($nextBuffer, $nextPos + 1);
+
+                        if (!str_starts_with($nextLine, 'data:')) {
+                            continue;
+                        }
+
+                        $nextJson = trim(substr($nextLine, 5));
+                        if ($nextJson === '' || $nextJson === '[DONE]') {
+                            continue;
+                        }
+
+                        $nextEvent = json_decode($nextJson, true);
+                        if (!is_array($nextEvent)) {
+                            continue;
+                        }
+
+                        $nextEventType = $nextEvent['type'] ?? null;
+                        if ($nextEventType === 'response.output_text.delta') {
+                            $assistantText .= (string) ($nextEvent['delta'] ?? '');
+                        } elseif ($nextEventType === 'response.completed') {
+                            $nextResponse = is_array($nextEvent['response'] ?? null) ? $nextEvent['response'] : [];
+                        }
+
+                        $nextForwardEvents[] = $nextJson;
+                    }
+
+                    foreach ($nextForwardEvents as $nextForwardEvent) {
+                        yield 'data: '.$nextForwardEvent."\n\n";
+                    }
+                }
+
+                if (empty($nextResponse)) {
+                    throw new \RuntimeException('Follow-up streamed response did not return a completed response payload.');
+                }
+
+                $allResponses[] = $nextResponse;
+
+                $identifiers = $this->extractResponseIdentifiers($nextResponse);
+                $responseId = $identifiers['response_id'] ?? $responseId;
+                $outputMessageId = $identifiers['output_message_id'] ?? $outputMessageId;
+
+                $nextUsage = $this->openAIClient->extractUsage($nextResponse);
+                $usage = [
+                    'prompt_tokens' => $usage['prompt_tokens'] + $nextUsage['prompt_tokens'],
+                    'completion_tokens' => $usage['completion_tokens'] + $nextUsage['completion_tokens'],
+                    'total_tokens' => $usage['total_tokens'] + $nextUsage['total_tokens'],
+                ];
+
+                $pendingCalls = $this->extractFunctionCalls($nextResponse);
+                $completedResponse = $nextResponse;
+            }
+
+            yield "data: [DONE]\n\n";
 
             $cost = $this->costCalculator->calculate($agent->model, $usage['prompt_tokens'], $usage['completion_tokens']);
             $this->conversationStore->appendMessage($conversation, [
@@ -272,6 +398,7 @@ class AgentRunner
                     'response_id' => $responseId,
                     'output_message_id' => $outputMessageId,
                     'response' => $completedResponse,
+                    'responses' => $allResponses,
                 ],
                 'prompt_tokens' => $usage['prompt_tokens'],
                 'completion_tokens' => $usage['completion_tokens'],
@@ -324,24 +451,17 @@ class AgentRunner
     {
         $maxIterations = 8;
         $response = [];
+        $resolvedTools = $this->agentToolResolver->resolveForAgent($agent);
 
         for ($i = 0; $i < $maxIterations; $i++) {
             $payload = [
                 'model' => $agent->model,
                 'input' => $history,
-                'tools' => $this->toolRegistry->allForResponse(),
+                'tools' => $resolvedTools['response_tools'],
                 'temperature' => $agent->temperature,
                 'max_output_tokens' => $agent->max_output_tokens,
+                'instructions' => !empty($instructions) ? (string) $instructions : null,
             ];
-
-            $payloadInput = $history;
-            if (!empty($instructions)) {
-                array_unshift($payloadInput, [
-                    'role' => 'system',
-                    'content' => [['type' => 'input_text', 'text' => $instructions]],
-                ]);
-            }
-            $payload['input'] = $payloadInput;
 
             $response = $this->openAIClient->createResponse(array_filter($payload, fn ($v) => $v !== null), $clientOptions);
             $functionCalls = $this->extractFunctionCalls($response);
@@ -360,37 +480,19 @@ class AgentRunner
             }
 
             foreach ($functionCalls as $call) {
-                $toolName = $call['name'];
-                $arguments = json_decode($call['arguments'] ?? '{}', true) ?: [];
-                $tool = $this->toolRegistry->get($toolName);
-
-                if (!$tool) {
-                    $toolResult = ['error' => "Tool [$toolName] is not registered"];
-                } elseif (is_callable($tool->handler)) {
-                    $toolResult = call_user_func($tool->handler, $arguments, $context);
-                } elseif ($tool->type === 'api' && is_string($tool->handler)) {
-                    $apiResponse = Http::post($tool->handler, [
-                        'arguments' => $arguments,
-                        'context' => $context,
-                    ]);
-                    $toolResult = $apiResponse->json() ?? ['status' => $apiResponse->status()];
-                } else {
-                    $toolResult = ['error' => "Tool [$toolName] has invalid handler"];
-                }
-
-                EventFacade::dispatch(new AgentToolCalled([
-                    'agent_id' => $agent->id,
-                    'conversation_id' => $conversationId,
-                    'run_id' => $runId,
-                    'tool_name' => $toolName,
-                    'tool_arguments' => $arguments,
-                    'tool_result' => $toolResult,
-                ]));
+                $execution = $this->executeToolCall(
+                    agent: $agent,
+                    call: $call,
+                    executableTools: $resolvedTools['executable_tools'],
+                    context: $context,
+                    runId: $runId,
+                    conversationId: $conversationId,
+                );
 
                 $history[] = [
                     'type' => 'function_call_output',
                     'call_id' => $call['call_id'] ?? null,
-                    'output' => json_encode($toolResult),
+                    'output' => json_encode($execution['tool_result']),
                 ];
             }
         }
@@ -437,6 +539,91 @@ class AgentRunner
         return [
             'response_id' => $responseId ? (string) $responseId : null,
             'output_message_id' => $outputMessageId,
+        ];
+    }
+
+    protected function executeToolCall(
+        Agent $agent,
+        array $call,
+        array $executableTools,
+        array $context,
+        int $runId,
+        int $conversationId,
+    ): array {
+        $toolName = (string) ($call['name'] ?? '');
+        $arguments = json_decode($call['arguments'] ?? '{}', true) ?: [];
+        $tool = $executableTools[$toolName] ?? $this->toolRegistry->get($toolName);
+        $startedAt = microtime(true);
+        $httpStatus = null;
+        $errorMessage = null;
+        $toolResult = null;
+
+        try {
+            if (!$tool) {
+                $toolResult = ['error' => "Tool [$toolName] is not registered"];
+            } elseif (is_callable($tool->handler)) {
+                $toolResult = call_user_func($tool->handler, $arguments, $context);
+            } elseif ($tool->type === 'api' && is_string($tool->handler)) {
+                // Send flat arguments for framework endpoints, but preserve context in side-channels.
+                $apiPayload = array_merge($arguments, [
+                    '_context' => $context,
+                    '_tool_name' => $toolName,
+                ]);
+                $apiResponse = Http::post($tool->handler, $apiPayload);
+                $httpStatus = $apiResponse->status();
+                $toolResult = $apiResponse->json() ?? ['status' => $httpStatus];
+            } else {
+                $toolResult = ['error' => "Tool [$toolName] has invalid handler"];
+            }
+        } catch (Throwable $toolException) {
+            $errorMessage = $toolException->getMessage();
+            $toolResult = ['error' => $errorMessage];
+        }
+
+        $success = $errorMessage === null
+            && !(is_array($toolResult) && array_key_exists('error', $toolResult))
+            && ($httpStatus === null || ($httpStatus >= 200 && $httpStatus < 300));
+
+        $durationMs = (int) round((microtime(true) - $startedAt) * 1000);
+
+        $this->toolUsageTracker->record([
+            'agent_id' => $agent->id,
+            'conversation_id' => $conversationId,
+            'agent_run_id' => $runId,
+            'tool_name' => $toolName,
+            'tool_type' => $tool?->type ?? null,
+            'handler_type' => is_string($tool?->handler) ? 'endpoint' : 'callable',
+            'success' => $success,
+            'duration_ms' => $durationMs,
+            'http_status' => $httpStatus,
+            'error_message' => $errorMessage,
+            'arguments' => $arguments,
+            'result' => is_array($toolResult) ? $toolResult : ['result' => $toolResult],
+            'metadata' => [
+                'call_id' => $call['call_id'] ?? null,
+                'response_tool_call_id' => $call['id'] ?? null,
+            ],
+        ]);
+
+        EventFacade::dispatch(new AgentToolCalled([
+            'agent_id' => $agent->id,
+            'conversation_id' => $conversationId,
+            'run_id' => $runId,
+            'tool_name' => $toolName,
+            'tool_arguments' => $arguments,
+            'tool_result' => $toolResult,
+        ]));
+
+        if ($errorMessage !== null) {
+            throw new \RuntimeException("Tool [$toolName] execution failed: ".$errorMessage);
+        }
+
+        return [
+            'tool_name' => $toolName,
+            'arguments' => $arguments,
+            'tool_result' => $toolResult,
+            'http_status' => $httpStatus,
+            'duration_ms' => $durationMs,
         ];
     }
 }

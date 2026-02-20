@@ -4,7 +4,6 @@ namespace Lyre\AiAgents\Services;
 
 use GuzzleHttp\Client as GuzzleClient;
 use GuzzleHttp\Exception\ClientException as GuzzleClientException;
-use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Http;
 use RuntimeException;
 
@@ -18,6 +17,97 @@ class OpenAIClient
         if ($response->failed()) {
             throw new RuntimeException(sprintf(
                 'OpenAI Responses API error (%d): %s',
+                $response->status(),
+                $this->truncateForLog($response->body())
+            ));
+        }
+
+        return $response->json();
+    }
+
+    public function retrieveAssistant(string $assistantId, array $clientConfig = []): ?array
+    {
+        $response = $this->baseRequest($clientConfig)
+            ->withHeaders($this->assistantsHeaders($clientConfig))
+            ->get($this->baseUrl($clientConfig).'/assistants/'.$assistantId);
+
+        if ($response->status() === 404) {
+            return null;
+        }
+
+        if ($response->failed()) {
+            throw new RuntimeException(sprintf(
+                'OpenAI assistant retrieval error (%d): %s',
+                $response->status(),
+                $this->truncateForLog($response->body())
+            ));
+        }
+
+        return $response->json();
+    }
+
+    public function createVectorStore(array $payload = [], array $clientConfig = []): array
+    {
+        $response = $this->baseRequest($clientConfig)
+            ->withHeaders($this->assistantsHeaders($clientConfig))
+            ->post($this->baseUrl($clientConfig).'/vector_stores', $payload);
+
+        if ($response->failed()) {
+            throw new RuntimeException(sprintf(
+                'OpenAI vector store create error (%d): %s',
+                $response->status(),
+                $this->truncateForLog($response->body())
+            ));
+        }
+
+        return $response->json();
+    }
+
+    public function uploadFile(string $absolutePath, ?string $originalFilename = null, string $purpose = 'assistants', array $clientConfig = []): array
+    {
+        if (!is_file($absolutePath)) {
+            throw new RuntimeException("File does not exist: {$absolutePath}");
+        }
+
+        $filename = $originalFilename ?: basename($absolutePath);
+        $handle = fopen($absolutePath, 'r');
+        if ($handle === false) {
+            throw new RuntimeException("Unable to read file: {$absolutePath}");
+        }
+
+        try {
+            $response = Http::withHeaders($this->headers($clientConfig, false))
+                ->timeout((int) $this->resolveClientConfigValue('timeout', $clientConfig, 60))
+                ->attach('file', $handle, $filename)
+                ->post($this->baseUrl($clientConfig).'/files', [
+                    'purpose' => $purpose,
+                ]);
+        } finally {
+            fclose($handle);
+        }
+
+        if ($response->failed()) {
+            throw new RuntimeException(sprintf(
+                'OpenAI file upload error (%d): %s',
+                $response->status(),
+                $this->truncateForLog($response->body())
+            ));
+        }
+
+        return $response->json();
+    }
+
+    public function attachFileToVectorStore(string $vectorStoreId, string $fileId, array $payload = [], array $clientConfig = []): array
+    {
+        $response = $this->baseRequest($clientConfig)
+            ->withHeaders($this->assistantsHeaders($clientConfig))
+            ->post($this->baseUrl($clientConfig)."/vector_stores/{$vectorStoreId}/files", array_merge([
+                'file_id' => $fileId,
+            ], $payload));
+
+        if ($response->failed()) {
+            throw new RuntimeException(sprintf(
+                'OpenAI vector store file attach error (%d): %s',
                 $response->status(),
                 $this->truncateForLog($response->body())
             ));
@@ -117,7 +207,7 @@ class OpenAIClient
 
     protected function baseRequest(array $clientConfig = [])
     {
-        return Http::withHeaders($this->headers($clientConfig))
+        return Http::withHeaders($this->headers($clientConfig, true))
             ->timeout((int) $this->resolveClientConfigValue('timeout', $clientConfig, 60));
     }
 
@@ -136,7 +226,7 @@ class OpenAIClient
         return $baseUrl;
     }
 
-    protected function headers(array $clientConfig = []): array
+    protected function headers(array $clientConfig = [], bool $json = true): array
     {
         $apiKey = (string) $this->resolveClientConfigValue('api_key', $clientConfig, '');
         if ($apiKey === '') {
@@ -145,8 +235,11 @@ class OpenAIClient
 
         $headers = [
             'Authorization' => 'Bearer '.$apiKey,
-            'Content-Type' => 'application/json',
         ];
+
+        if ($json) {
+            $headers['Content-Type'] = 'application/json';
+        }
 
         if ($org = $this->resolveClientConfigValue('organization', $clientConfig)) {
             $headers['OpenAI-Organization'] = $org;
@@ -154,6 +247,18 @@ class OpenAIClient
 
         if ($project = $this->resolveClientConfigValue('project', $clientConfig)) {
             $headers['OpenAI-Project'] = $project;
+        }
+
+        return $headers;
+    }
+
+    protected function assistantsHeaders(array $clientConfig = []): array
+    {
+        $header = (string) config('ai-agents.openai.assistants_beta_header', 'assistants=v2');
+        $headers = [];
+
+        if ($header !== '') {
+            $headers['OpenAI-Beta'] = $header;
         }
 
         return $headers;

@@ -4,6 +4,7 @@ namespace Lyre\AiAgents\Services;
 
 use Lyre\AiAgents\Data\AgentDefinition;
 use Lyre\AiAgents\Data\ToolDefinition;
+use Illuminate\Support\Facades\Schema;
 use Lyre\AiAgents\Models\Agent;
 use Lyre\AiAgents\Models\AgentTool;
 
@@ -13,6 +14,7 @@ class AgentManager
         protected AgentRunner $runner,
         protected ToolRegistry $toolRegistry,
         protected PromptTemplateResolver $promptTemplateResolver,
+        protected AgentKnowledgeService $agentKnowledgeService,
     ) {}
 
     public function registerAgent(array|AgentDefinition $definition): Agent
@@ -21,23 +23,37 @@ class AgentManager
             $definition = $definition->toArray();
         }
 
+        $existing = Agent::query()->where('name', $definition['name'])->first();
+
         $instructions = array_key_exists('instructions', $definition)
             ? $definition['instructions']
-            : null;
+            : ($existing?->instructions ?? null);
+        $description = array_key_exists('description', $definition)
+            ? $definition['description']
+            : ($existing?->description ?? null);
 
         $promptTemplateId = $definition['prompt_template_id'] ?? null;
         if (!$promptTemplateId && empty($instructions)) {
             $promptTemplateId = $this->promptTemplateResolver->defaultTemplateId();
         }
 
+        $existingMetadata = is_array($existing?->metadata) ? $existing->metadata : [];
+        $incomingMetadata = is_array($definition['metadata'] ?? null) ? $definition['metadata'] : [];
+        $mergedMetadata = array_merge($existingMetadata, $incomingMetadata);
+
+        $existingTools = is_array($existing?->tools) ? $existing->tools : [];
+        $incomingTools = is_array($definition['tools'] ?? null) ? $definition['tools'] : [];
+        $mergedTools = array_values(array_unique(array_filter(array_merge($existingTools, $incomingTools), fn ($v) => is_string($v) && $v !== '')));
+
         $values = [
             'model' => $definition['model'] ?? config('ai-agents.default_model'),
+            'description' => $description,
             'instructions' => $instructions,
             'prompt_template_id' => $promptTemplateId,
             'temperature' => $definition['temperature'] ?? null,
             'max_output_tokens' => $definition['max_output_tokens'] ?? null,
-            'tools' => $definition['tools'] ?? [],
-            'metadata' => $definition['metadata'] ?? [],
+            'tools' => $mergedTools,
+            'metadata' => $mergedMetadata,
             'is_active' => true,
         ];
 
@@ -77,6 +93,7 @@ class AgentManager
                     'handler_type' => is_string($definition->handler) ? 'endpoint' : 'callable',
                     'handler_ref' => is_string($definition->handler) ? $definition->handler : null,
                     'metadata' => $definition->metadata,
+                    ...(Schema::hasColumn((new AgentTool())->getTable(), 'is_enabled') ? ['is_enabled' => true] : []),
                 ]
             );
         }
@@ -98,5 +115,28 @@ class AgentManager
             : Agent::query()->where('name', $agent)->firstOrFail();
 
         return $this->runner->stream($agentModel, $message, $context);
+    }
+
+    public function ensureLeadToolForAllAgents(string $endpoint): int
+    {
+        return $this->agentKnowledgeService->ensureLeadToolForAllAgents($endpoint);
+    }
+
+    public function ensureLeadTool(int|string $agent, string $endpoint): void
+    {
+        $agentModel = is_numeric($agent)
+            ? Agent::query()->findOrFail($agent)
+            : Agent::query()->where('name', $agent)->firstOrFail();
+
+        $this->agentKnowledgeService->ensureLeadCollectionTool($agentModel, $endpoint);
+    }
+
+    public function syncAssistantVectorStore(int|string $agent, string $assistantId, array $clientConfig = []): ?string
+    {
+        $agentModel = is_numeric($agent)
+            ? Agent::query()->findOrFail($agent)
+            : Agent::query()->where('name', $agent)->firstOrFail();
+
+        return $this->agentKnowledgeService->syncAssistantVectorStore($agentModel, $assistantId, $clientConfig);
     }
 }

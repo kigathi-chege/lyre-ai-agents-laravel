@@ -13,6 +13,7 @@ class AgentTool extends Model
     protected $casts = [
         'parameters_schema' => 'array',
         'metadata' => 'array',
+        'is_enabled' => 'boolean',
     ];
 
     public function __construct(array $attributes = [])
