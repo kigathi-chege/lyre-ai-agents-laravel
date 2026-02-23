@@ -119,13 +119,25 @@ class ConversationStore
             ->where('conversation_id', $conversation->id)
             ->orderByDesc('id')
             ->limit($max)
-            ->get()
+            ->get(['role', 'content', 'metadata'])
             ->reverse()
             ->values();
 
         return $messages
             ->map(function ($m) {
                 $role = in_array($m->role, ['system', 'user', 'assistant'], true) ? $m->role : 'assistant';
+                $metadata = is_array($m->metadata) ? $m->metadata : [];
+
+                // Hard guard: instructions/description must be supplied via top-level "instructions",
+                // never as conversational message history. Only keep generated truncation summaries.
+                if ($role === 'system') {
+                    $isGeneratedSummary = (($metadata['source'] ?? null) === 'truncation')
+                        && (($metadata['generated'] ?? false) === true);
+                    if (!$isGeneratedSummary) {
+                        return null;
+                    }
+                }
+
                 $text = $this->flattenContentToText($m->content);
 
                 if ($text === '') {
