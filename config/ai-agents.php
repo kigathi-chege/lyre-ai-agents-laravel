@@ -30,6 +30,30 @@ return [
 
     'prompts' => [
         'default_key' => env('AI_AGENTS_DEFAULT_PROMPT_KEY', 'enterprise_default'),
+        'max_inheritance_depth' => (int) env('AI_AGENTS_PROMPT_MAX_INHERITANCE_DEPTH', 3),
+        'section_separator' => env('AI_AGENTS_PROMPT_SECTION_SEPARATOR', "\n\n"),
+    ],
+
+    'tools' => [
+        'lead' => [
+            'tool_name' => env('AI_AGENTS_LEAD_TOOL_NAME', 'submit_lead'),
+            'webhook_url' => env('AI_AGENTS_LEAD_WEBHOOK_URL'),
+            'timeout_seconds' => (int) env('AI_AGENTS_LEAD_TIMEOUT', 10),
+            'description' => env(
+                'AI_AGENTS_LEAD_DESCRIPTION',
+                'Capture lead contact details and forward them to the configured endpoint.'
+            ),
+        ],
+        'handover' => [
+            'enabled' => (bool) env('AI_AGENTS_HANDOVER_ENABLED', false),
+            'tool_name' => env('AI_AGENTS_HANDOVER_TOOL_NAME', 'request_human_handover'),
+            'webhook_url' => env('AI_AGENTS_HANDOVER_WEBHOOK_URL'),
+            'timeout_seconds' => (int) env('AI_AGENTS_HANDOVER_TIMEOUT', 10),
+            'description' => env(
+                'AI_AGENTS_HANDOVER_DESCRIPTION',
+                'Request a human takeover of the current conversation. Call this when the user needs an action you cannot perform, when they explicitly ask for a person, or when the conversation falls outside your scope.'
+            ),
+        ],
     ],
 
     'conversation' => [

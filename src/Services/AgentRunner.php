@@ -197,6 +197,7 @@ class AgentRunner
             'temperature' => $agent->temperature,
             'max_output_tokens' => $agent->max_output_tokens,
             'instructions' => !empty($instructions) ? (string) $instructions : null,
+            'text' => $this->resolveTextFormatPayload($agent),
         ];
 
         $buffer = '';
@@ -312,6 +313,7 @@ class AgentRunner
                     'temperature' => $agent->temperature,
                     'max_output_tokens' => $agent->max_output_tokens,
                     'instructions' => !empty($instructions) ? (string) $instructions : null,
+                    'text' => $this->resolveTextFormatPayload($agent),
                 ];
 
                 $nextResponse = [];
@@ -461,6 +463,7 @@ class AgentRunner
                 'temperature' => $agent->temperature,
                 'max_output_tokens' => $agent->max_output_tokens,
                 'instructions' => !empty($instructions) ? (string) $instructions : null,
+                'text' => $this->resolveTextFormatPayload($agent),
             ];
 
             $response = $this->openAIClient->createResponse(array_filter($payload, fn ($v) => $v !== null), $clientOptions);
@@ -509,6 +512,37 @@ class AgentRunner
         }
 
         return [];
+    }
+
+    /**
+     * Resolve the OpenAI Responses API `text` payload field for an agent.
+     *
+     * Reads `agent.metadata.response_format` and wraps it under `text.format`
+     * so callers can configure structured output without knowing the wire shape:
+     *
+     * agent.metadata.response_format = {
+     *     "type": "json_schema",
+     *     "name": "my_response",
+     *     "schema": { ... },
+     *     "strict": true
+     * }
+     *
+     * If the value is already shaped as `{ format: { ... } }` we pass it through.
+     */
+    protected function resolveTextFormatPayload(Agent $agent): ?array
+    {
+        $metadata = is_array($agent->metadata ?? null) ? $agent->metadata : [];
+        $rf = $metadata['response_format'] ?? null;
+
+        if (!is_array($rf) || empty($rf)) {
+            return null;
+        }
+
+        if (isset($rf['format']) && is_array($rf['format'])) {
+            return $rf;
+        }
+
+        return ['format' => $rf];
     }
 
     protected function extractFunctionCalls(array $response): array

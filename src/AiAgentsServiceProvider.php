@@ -4,6 +4,7 @@ namespace Lyre\AiAgents;
 
 use Illuminate\Support\Facades\Route;
 use Illuminate\Support\ServiceProvider;
+use Lyre\AiAgents\Contracts\PromptSectionContributor;
 use Lyre\AiAgents\Services\AgentManager;
 use Lyre\AiAgents\Services\AgentKnowledgeService;
 use Lyre\AiAgents\Services\AgentRunner;
@@ -31,7 +32,9 @@ class AiAgentsServiceProvider extends ServiceProvider
         $this->app->singleton(UsageTracker::class);
         $this->app->singleton(ConversationStore::class);
         $this->app->singleton(RateLimiter::class);
-        $this->app->singleton(PromptTemplateResolver::class);
+        $this->app->singleton(PromptTemplateResolver::class, function ($app) {
+            return new PromptTemplateResolver($app->tagged(PromptSectionContributor::TAG));
+        });
         $this->app->singleton(ToolUsageTracker::class);
         $this->app->singleton(AgentKnowledgeService::class);
         $this->app->singleton(InboundEventProcessor::class);

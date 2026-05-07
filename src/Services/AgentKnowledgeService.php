@@ -155,6 +155,7 @@ class AgentKnowledgeService
 
     public function ensureLeadCollectionTool(Agent $agent, string $endpoint): AgentTool
     {
+        $toolName = (string) config('ai-agents.tools.lead.tool_name', 'submit_lead');
         $schema = [
             'type' => 'object',
             'properties' => [
@@ -172,13 +173,16 @@ class AgentKnowledgeService
 
         $payload = [
             'type' => 'api',
-            'description' => 'Submit lead details to Axis CRM.',
+            'description' => (string) config(
+                'ai-agents.tools.lead.description',
+                'Capture lead contact details and forward them to the configured endpoint.'
+            ),
             'parameters_schema' => $schema,
             'handler_type' => 'endpoint',
             'handler_ref' => $endpoint,
             'metadata' => [
-                'managed_by' => 'axis',
-                'axis_tool' => true,
+                'managed_by' => 'lyre.ai_agents',
+                'lyre_builtin_tool' => 'lead',
             ],
         ];
 
@@ -186,12 +190,14 @@ class AgentKnowledgeService
             $payload['is_enabled'] = true;
         }
 
+        $this->renameLegacyTool($agent, ['submit_lead_to_axis'], $toolName);
+
         $tool = AgentTool::query()->updateOrCreate(
-            ['agent_id' => $agent->id, 'name' => 'submit_lead_to_axis'],
+            ['agent_id' => $agent->id, 'name' => $toolName],
             $payload
         );
 
-        $this->ensureToolListedOnAgent($agent, 'submit_lead_to_axis');
+        $this->ensureToolListedOnAgent($agent, $toolName);
 
         return $tool;
     }
@@ -208,6 +214,126 @@ class AgentKnowledgeService
         });
 
         return $count;
+    }
+
+    /**
+     * Register the generic "request human handover" tool on an agent.
+     *
+     * The tool POSTs to a host-configured webhook (`config('ai-agents.tools.handover.webhook_url')`)
+     * with `{ reason, urgency, topic? }` plus Lyre's standard run/conversation context.
+     * The host endpoint is responsible for flipping conversation state to a human.
+     */
+    public function ensureHandoverTool(Agent $agent, string $endpoint): AgentTool
+    {
+        $toolName = (string) config('ai-agents.tools.handover.tool_name', 'request_human_handover');
+        $schema = [
+            'type' => 'object',
+            'properties' => [
+                'reason' => [
+                    'type' => 'string',
+                    'description' => 'Short explanation of why a human is needed.',
+                ],
+                'urgency' => [
+                    'type' => 'string',
+                    'enum' => ['low', 'medium', 'high'],
+                    'description' => 'Severity / time-sensitivity of the request.',
+                ],
+                'topic' => [
+                    'type' => 'string',
+                    'description' => 'Optional topic summary to help the human pick up context.',
+                ],
+            ],
+            'required' => ['reason', 'urgency'],
+        ];
+
+        $payload = [
+            'type' => 'api',
+            'description' => (string) config(
+                'ai-agents.tools.handover.description',
+                'Request a human takeover of the current conversation. Call this when the user needs an action you cannot perform, when they explicitly ask for a person, or when the conversation falls outside your scope.'
+            ),
+            'parameters_schema' => $schema,
+            'handler_type' => 'endpoint',
+            'handler_ref' => $endpoint,
+            'metadata' => [
+                'managed_by' => 'lyre.ai_agents',
+                'lyre_builtin_tool' => 'handover',
+            ],
+        ];
+
+        if (Schema::hasColumn((new AgentTool())->getTable(), 'is_enabled')) {
+            $payload['is_enabled'] = true;
+        }
+
+        $tool = AgentTool::query()->updateOrCreate(
+            ['agent_id' => $agent->id, 'name' => $toolName],
+            $payload
+        );
+
+        $this->ensureToolListedOnAgent($agent, $toolName);
+
+        return $tool;
+    }
+
+    public function ensureHandoverToolForAllAgents(string $endpoint): int
+    {
+        $count = 0;
+
+        Agent::query()->chunkById(200, function ($agents) use ($endpoint, &$count) {
+            foreach ($agents as $agent) {
+                $this->ensureHandoverTool($agent, $endpoint);
+                $count++;
+            }
+        });
+
+        return $count;
+    }
+
+    /**
+     * Idempotently rename any legacy tool rows (and their entries on `agent.tools`)
+     * to the canonical name. Safe to call repeatedly.
+     */
+    protected function renameLegacyTool(Agent $agent, array $legacyNames, string $canonicalName): void
+    {
+        if (empty($legacyNames)) {
+            return;
+        }
+
+        $existingCanonical = AgentTool::query()
+            ->where('agent_id', $agent->id)
+            ->where('name', $canonicalName)
+            ->exists();
+
+        if ($existingCanonical) {
+            AgentTool::query()
+                ->where('agent_id', $agent->id)
+                ->whereIn('name', $legacyNames)
+                ->delete();
+        } else {
+            AgentTool::query()
+                ->where('agent_id', $agent->id)
+                ->whereIn('name', $legacyNames)
+                ->update(['name' => $canonicalName]);
+        }
+
+        $tools = is_array($agent->tools) ? $agent->tools : [];
+        if (empty($tools)) {
+            return;
+        }
+
+        $changed = false;
+        foreach ($tools as $i => $name) {
+            if (in_array($name, $legacyNames, true)) {
+                $tools[$i] = $canonicalName;
+                $changed = true;
+            }
+        }
+
+        if ($changed) {
+            $tools = array_values(array_unique($tools));
+            $agent->tools = $tools;
+            $agent->save();
+        }
     }
 
     protected function ensureToolListedOnAgent(Agent $agent, string $toolName): void

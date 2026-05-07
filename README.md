@@ -54,6 +54,79 @@ foreach ($stream as $chunk) {
 }
 ```
 
+## Prompt templates
+
+Templates live in `ai_agents_prompt_templates` and are linked to an agent via `agents.prompt_template_id`. The resolver renders template content with `{{variable}}` substitution and supports inheritance.
+
+### Inheritance
+
+Set `extends_template_id` on a template to compose it on top of a parent. The resolver walks root → leaf and concatenates content with the configured separator (default `\n\n`). Inheritance is depth-capped (`prompts.max_inheritance_depth`, default 3) and cycle-safe — on detection the resolver logs a warning and falls back to the leaf alone.
+
+### Variables
+
+Any `{{token}}` in a template is substituted at resolve time. Variables are merged from these sources, lowest-to-highest priority:
+
+1. Each template's `variables` JSON column (parent first, child overrides).
+2. System defaults: `assistant_name`, `agent_id`, `model`.
+3. `agent.metadata.template_variables`.
+4. Caller-supplied map passed to `resolveInstructionsForAgent($agent, $variables)`.
+
+### Section contributors
+
+Host apps can append extra sections to the resolved prompt without forking the resolver:
+
+```php
+use Lyre\AiAgents\Contracts\PromptSectionContributor;
+use Lyre\AiAgents\Models\Agent;
+
+class ImageCatalogSection implements PromptSectionContributor
+{
+    public function name(): string { return 'image_catalog'; }
+    public function shouldApply(Agent $agent): bool { /* … */ }
+    public function render(Agent $agent): ?string { /* … */ }
+}
+
+// In a service provider:
+$this->app->bind(ImageCatalogSection::class);
+$this->app->tag([ImageCatalogSection::class], PromptSectionContributor::TAG);
+```
+
+## Structured output (`text.format`)
+
+Set `agent.metadata.response_format` to a Responses API JSON-schema config and the runner forwards it as `text.format` on every call:
+
+```php
+$agent->metadata = array_merge($agent->metadata ?? [], [
+    'response_format' => [
+        'type' => 'json_schema',
+        'name' => 'kenchic_whatsapp_response',
+        'strict' => true,
+        'schema' => [/* … */],
+    ],
+]);
+$agent->save();
+```
+
+## Built-in tools
+
+### Lead capture (`submit_lead`)
+
+```php
+app(\Lyre\AiAgents\Services\AgentKnowledgeService::class)
+    ->ensureLeadToolForAllAgents('https://your-app.test/api/leads');
+```
+
+The tool name is config-driven via `tools.lead.tool_name` (default `submit_lead`). Any agent that previously had the legacy `submit_lead_to_axis` tool will be migrated idempotently on next call.
+
+### Human handover (`request_human_handover`)
+
+```php
+app(\Lyre\AiAgents\Services\AgentKnowledgeService::class)
+    ->ensureHandoverToolForAllAgents('https://your-app.test/api/handover');
+```
+
+The handler endpoint receives the function-call arguments plus Lyre's run/conversation context and is responsible for whatever handover semantics the host app needs (flipping a flag, paging on-call, etc.).
+
 ## Events dispatched
 
 - `Lyre\AiAgents\Events\AgentRunStarted`
