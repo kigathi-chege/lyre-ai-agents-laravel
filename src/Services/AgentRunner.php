@@ -210,7 +210,7 @@ class AgentRunner
         $toolLoopExecuted = false;
 
         try {
-            foreach ($this->openAIClient->streamResponse(array_filter($payload, fn ($v) => $v !== null), $clientOptions) as $chunk) {
+            foreach ($this->openAIClient->streamResponse(array_filter($payload, fn($v) => $v !== null), $clientOptions) as $chunk) {
                 $buffer .= $chunk;
                 $forwardEvents = [];
 
@@ -253,7 +253,7 @@ class AgentRunner
                 }
 
                 foreach ($forwardEvents as $forwardEvent) {
-                    yield 'data: '.$forwardEvent."\n\n";
+                    yield 'data: ' . $forwardEvent . "\n\n";
                 }
             }
 
@@ -274,11 +274,11 @@ class AgentRunner
 
                 $toolOutputs = [];
                 foreach ($pendingCalls as $call) {
-                    yield 'data: '.json_encode([
+                    yield 'data: ' . json_encode([
                         'type' => 'tool.call.started',
                         'tool_name' => $call['name'] ?? null,
                         'call_id' => $call['call_id'] ?? null,
-                    ])."\n\n";
+                    ]) . "\n\n";
 
                     $execution = $this->executeToolCall(
                         agent: $agent,
@@ -296,13 +296,13 @@ class AgentRunner
                     ];
 
                     // Extra stream event so consumers can observe tool execution in-stream.
-                    yield 'data: '.json_encode([
+                    yield 'data: ' . json_encode([
                         'type' => 'tool.call.completed',
                         'tool_name' => $execution['tool_name'],
                         'call_id' => $call['call_id'] ?? null,
                         'result' => $execution['tool_result'],
                         'duration_ms' => $execution['duration_ms'],
-                    ])."\n\n";
+                    ]) . "\n\n";
                 }
 
                 $followUpPayload = [
@@ -318,7 +318,7 @@ class AgentRunner
 
                 $nextResponse = [];
                 $nextBuffer = '';
-                foreach ($this->openAIClient->streamResponse(array_filter($followUpPayload, fn ($v) => $v !== null), $clientOptions) as $nextChunk) {
+                foreach ($this->openAIClient->streamResponse(array_filter($followUpPayload, fn($v) => $v !== null), $clientOptions) as $nextChunk) {
                     $nextBuffer .= $nextChunk;
                     $nextForwardEvents = [];
 
@@ -351,7 +351,7 @@ class AgentRunner
                     }
 
                     foreach ($nextForwardEvents as $nextForwardEvent) {
-                        yield 'data: '.$nextForwardEvent."\n\n";
+                        yield 'data: ' . $nextForwardEvent . "\n\n";
                     }
                 }
 
@@ -454,24 +454,36 @@ class AgentRunner
         $maxIterations = 8;
         $response = [];
         $resolvedTools = $this->agentToolResolver->resolveForAgent($agent);
+        $usage = ['prompt_tokens' => 0, 'completion_tokens' => 0, 'total_tokens' => 0];
+        $previousResponseId = null;
 
         for ($i = 0; $i < $maxIterations; $i++) {
             $payload = [
                 'model' => $agent->model,
-                'input' => $history,
                 'tools' => $resolvedTools['response_tools'],
                 'temperature' => $agent->temperature,
                 'max_output_tokens' => $agent->max_output_tokens,
                 'instructions' => !empty($instructions) ? (string) $instructions : null,
                 'text' => $this->resolveTextFormatPayload($agent),
             ];
+            if ($previousResponseId) {
+                $payload['previous_response_id'] = $previousResponseId;
+                $payload['input'] = $history;
+            } else {
+                $payload['input'] = $history;
+            }
 
-            $response = $this->openAIClient->createResponse(array_filter($payload, fn ($v) => $v !== null), $clientOptions);
+            $response = $this->openAIClient->createResponse(array_filter($payload, fn($v) => $v !== null), $clientOptions);
+            $responseUsage = $this->openAIClient->extractUsage($response);
+            $usage = [
+                'prompt_tokens' => $usage['prompt_tokens'] + $responseUsage['prompt_tokens'],
+                'completion_tokens' => $usage['completion_tokens'] + $responseUsage['completion_tokens'],
+                'total_tokens' => $usage['total_tokens'] + $responseUsage['total_tokens'],
+            ];
             $functionCalls = $this->extractFunctionCalls($response);
 
             if (empty($functionCalls)) {
                 $text = $this->openAIClient->extractText($response);
-                $usage = $this->openAIClient->extractUsage($response);
                 $cost = $this->costCalculator->calculate($agent->model, $usage['prompt_tokens'], $usage['completion_tokens']);
 
                 return [
@@ -482,6 +494,7 @@ class AgentRunner
                 ];
             }
 
+            $toolOutputs = [];
             foreach ($functionCalls as $call) {
                 $execution = $this->executeToolCall(
                     agent: $agent,
@@ -492,12 +505,19 @@ class AgentRunner
                     conversationId: $conversationId,
                 );
 
-                $history[] = [
+                $toolOutputs[] = [
                     'type' => 'function_call_output',
                     'call_id' => $call['call_id'] ?? null,
                     'output' => json_encode($execution['tool_result']),
                 ];
             }
+
+            $previousResponseId = $response['id'] ?? null;
+            if (empty($previousResponseId)) {
+                throw new \RuntimeException('Cannot continue tool call loop without response id.');
+            }
+
+            $history = $toolOutputs;
         }
 
         throw new \RuntimeException('Tool loop exceeded iteration limit');
@@ -649,7 +669,7 @@ class AgentRunner
         ]));
 
         if ($errorMessage !== null) {
-            throw new \RuntimeException("Tool [$toolName] execution failed: ".$errorMessage);
+            throw new \RuntimeException("Tool [$toolName] execution failed: " . $errorMessage);
         }
 
         return [
