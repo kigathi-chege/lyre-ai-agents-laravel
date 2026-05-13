@@ -16,6 +16,11 @@ class Agent extends Model
         'metadata' => 'array',
         'tools' => 'array',
         'openai_api_key' => 'encrypted',
+        // OpenAI's Responses API strictly type-checks these — without casts, MySQL
+        // returns them as strings (PDO emulated prepares default) and the request
+        // 400s with "Invalid type for 'temperature': expected a decimal".
+        'temperature' => 'float',
+        'max_output_tokens' => 'integer',
     ];
 
     protected $hidden = [

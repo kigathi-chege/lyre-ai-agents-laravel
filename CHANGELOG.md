@@ -5,6 +5,11 @@ All notable changes to `lyre/ai-agents` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.1] - 2026-05-08
+
+### Fixed
+- `Agent` model now casts `temperature` to `float` and `max_output_tokens` to `integer`. MySQL returns these columns as PHP strings under PDO emulated prepares (Laravel's default), and the OpenAI Responses API strictly type-checks them — agents with a non-null `temperature` 400'd with `"Invalid type for 'temperature': expected a decimal, but got a string instead"`. Agents with both fields null were unaffected because `AgentRunner` strips null payload keys.
+
 ## [1.1.0] - 2026-05-06
 
 ### Added
