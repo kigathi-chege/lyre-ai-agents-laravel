@@ -112,6 +112,65 @@ class ConversationStore
         return $created;
     }
 
+    /**
+     * Insert a soft "session reset" system message when the gap since the last
+     * message in the conversation exceeds the configured threshold. The marker
+     * tells the model the next user turn should be treated as a fresh start,
+     * without hard-deleting old history. Returns the inserted message, or null
+     * when no boundary is needed (first turn, recent activity, threshold
+     * disabled, or a boundary already sits at the tail).
+     */
+    public function maybeInsertSessionBoundary(Conversation $conversation): ?ConversationMessage
+    {
+        $threshold = (int) config('ai-agents.conversation.session_reset_after_minutes', 60);
+        if ($threshold <= 0) {
+            return null;
+        }
+
+        $last = ConversationMessage::query()
+            ->where('conversation_id', $conversation->id)
+            ->orderByDesc('id')
+            ->first(['id', 'role', 'metadata', 'created_at']);
+
+        if (!$last) {
+            return null;
+        }
+
+        $lastMeta = is_array($last->metadata) ? $last->metadata : [];
+        if ($last->role === 'system' && ($lastMeta['source'] ?? null) === 'session_boundary') {
+            return null;
+        }
+
+        $gap = (int) $last->created_at->diffInMinutes(now());
+        if ($gap < $threshold) {
+            return null;
+        }
+
+        return $this->appendMessage($conversation, [
+            'role' => 'system',
+            'content' => [['type' => 'text', 'text' => sprintf(
+                '--- Session reset after %s of inactivity. Treat the next user message as a fresh start. Do not continue prior topics unless the user clearly references them. ---',
+                $this->formatGap($gap)
+            )]],
+            'metadata' => [
+                'source' => 'session_boundary',
+                'generated' => true,
+                'gap_minutes' => $gap,
+            ],
+        ]);
+    }
+
+    protected function formatGap(int $minutes): string
+    {
+        if ($minutes < 60) {
+            return "{$minutes}m";
+        }
+        if ($minutes < 60 * 24) {
+            return intdiv($minutes, 60) . 'h';
+        }
+        return intdiv($minutes, 60 * 24) . 'd';
+    }
+
     public function historyForModel(Conversation $conversation): array
     {
         $max = (int) config('ai-agents.conversation.max_history_messages', 30);
@@ -129,11 +188,12 @@ class ConversationStore
                 $metadata = is_array($m->metadata) ? $m->metadata : [];
 
                 // Hard guard: instructions/description must be supplied via top-level "instructions",
-                // never as conversational message history. Only keep generated truncation summaries.
+                // never as conversational message history. Only keep generated runtime markers
+                // (truncation summaries and session boundary notices).
                 if ($role === 'system') {
-                    $isGeneratedSummary = (($metadata['source'] ?? null) === 'truncation')
-                        && (($metadata['generated'] ?? false) === true);
-                    if (!$isGeneratedSummary) {
+                    $source = $metadata['source'] ?? null;
+                    $isGenerated = ($metadata['generated'] ?? false) === true;
+                    if (!$isGenerated || !in_array($source, ['truncation', 'session_boundary'], true)) {
                         return null;
                     }
                 }

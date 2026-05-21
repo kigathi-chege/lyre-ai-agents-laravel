@@ -62,6 +62,7 @@ class AgentRunner
             'run_id' => $run->id,
         ]));
 
+        $this->conversationStore->maybeInsertSessionBoundary($conversation);
         $this->conversationStore->appendMessage($conversation, [
             'role' => 'user',
             'content' => [['type' => 'text', 'text' => $userMessage]],
@@ -180,6 +181,7 @@ class AgentRunner
             'run_id' => $run->id,
         ]));
 
+        $this->conversationStore->maybeInsertSessionBoundary($conversation);
         $this->conversationStore->appendMessage($conversation, [
             'role' => 'user',
             'content' => [['type' => 'text', 'text' => $userMessage]],

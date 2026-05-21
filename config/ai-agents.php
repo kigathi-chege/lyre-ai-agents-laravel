@@ -62,6 +62,7 @@ return [
         'summary_model' => env('AI_AGENTS_SUMMARY_MODEL', 'gpt-4.1-mini'),
         'summary_max_tokens' => (int) env('AI_AGENTS_SUMMARY_MAX_TOKENS', 400),
         'batch_max_messages' => (int) env('AI_AGENTS_BATCH_MAX_MESSAGES', 80),
+        'session_reset_after_minutes' => (int) env('AI_AGENTS_SESSION_RESET_AFTER_MINUTES', 60),
     ],
 
     'rate_limit' => [
