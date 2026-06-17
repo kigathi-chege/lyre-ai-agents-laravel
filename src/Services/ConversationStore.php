@@ -215,6 +215,67 @@ class ConversationStore
             ->all();
     }
 
+    public function historyForPromptContext(Conversation $conversation, int $excludeRecentMessages = 0): ?string
+    {
+        $max = max(1, (int) config('ai-agents.conversation.max_history_messages', 30));
+        $messages = ConversationMessage::query()
+            ->where('conversation_id', $conversation->id)
+            ->orderByDesc('id')
+            ->limit($max + max(0, $excludeRecentMessages))
+            ->get(['role', 'content', 'metadata']);
+
+        if ($excludeRecentMessages > 0) {
+            $messages = $messages->slice($excludeRecentMessages)->values();
+        }
+
+        $entries = $messages
+            ->map(function ($message) {
+                $role = in_array($message->role, ['system', 'user', 'assistant'], true)
+                    ? $message->role
+                    : 'assistant';
+                $metadata = is_array($message->metadata) ? $message->metadata : [];
+
+                if ($role === 'system') {
+                    $source = $metadata['source'] ?? null;
+                    $isGenerated = ($metadata['generated'] ?? false) === true;
+                    if (!$isGenerated || !in_array($source, ['truncation', 'session_boundary'], true)) {
+                        return null;
+                    }
+                }
+
+                $text = $this->flattenContentToText($message->content);
+                if ($text === '') {
+                    return null;
+                }
+
+                return [
+                    'role_label' => $this->promptContextRoleLabel($role, $metadata),
+                    'text' => preg_replace('/\s+/', ' ', trim($text)),
+                ];
+            })
+            ->filter()
+            ->values();
+
+        if ($entries->isEmpty()) {
+            return null;
+        }
+
+        $lines = [
+            'Prior conversation context:',
+            'The messages below are listed from most recent to oldest.',
+            'Give more weight to more recent messages when details conflict, appear stale, or the user changes direction.',
+            '<conversation_context>',
+        ];
+
+        foreach ($entries as $index => $entry) {
+            $lines[] = sprintf('%d. %s: %s', $index + 1, $entry['role_label'], $entry['text']);
+        }
+
+        $lines[] = '</conversation_context>';
+
+        return implode("\n", $lines);
+    }
+
     public function truncateIfNeeded(Conversation $conversation, OpenAIClient $client, array $clientConfig = []): void
     {
         $count = ConversationMessage::query()->where('conversation_id', $conversation->id)->count();
@@ -277,5 +338,24 @@ class ConversationStore
         }
 
         return trim(implode("\n", $chunks));
+    }
+
+    protected function promptContextRoleLabel(string $role, array $metadata = []): string
+    {
+        if ($role === 'user') {
+            return 'User';
+        }
+
+        if ($role === 'assistant') {
+            return 'Assistant';
+        }
+
+        $source = $metadata['source'] ?? null;
+
+        return match ($source) {
+            'session_boundary' => 'System note',
+            'truncation' => 'System summary',
+            default => 'System',
+        };
     }
 }

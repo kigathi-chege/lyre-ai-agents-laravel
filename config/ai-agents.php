@@ -15,6 +15,13 @@ return [
 
     'default_model' => env('AI_AGENTS_DEFAULT_MODEL', 'gpt-4.1-mini'),
 
+    'logging' => [
+        // Log the exact payload sent to the AI provider just before each request.
+        'log_outbound_payloads' => (bool) env('AI_AGENTS_LOG_OUTBOUND_PAYLOADS', true),
+        // Log channel to use; null uses the application default channel.
+        'channel' => env('AI_AGENTS_LOG_CHANNEL'),
+    ],
+
     'tables' => [
         'prefix' => $prefix,
         'agents' => env('AI_AGENTS_TABLE_AGENTS', $prefix.'agents'),

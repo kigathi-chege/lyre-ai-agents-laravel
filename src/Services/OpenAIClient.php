@@ -5,12 +5,15 @@ namespace Lyre\AiAgents\Services;
 use GuzzleHttp\Client as GuzzleClient;
 use GuzzleHttp\Exception\ClientException as GuzzleClientException;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use RuntimeException;
 
 class OpenAIClient
 {
     public function createResponse(array $payload, array $clientConfig = []): array
     {
+        $this->logOutboundPayload('createResponse', $payload, $clientConfig);
+
         $response = $this->baseRequest($clientConfig)
             ->post($this->baseUrl($clientConfig).'/responses', $payload);
 
@@ -119,6 +122,8 @@ class OpenAIClient
     public function streamResponse(array $payload, array $clientConfig = []): \Generator
     {
         $payload['stream'] = true;
+
+        $this->logOutboundPayload('streamResponse', $payload, $clientConfig);
 
         $client = new GuzzleClient([
             // Guzzle needs trailing slash on base_uri to preserve the /v1 path segment.
@@ -262,6 +267,33 @@ class OpenAIClient
         }
 
         return $headers;
+    }
+
+    /**
+     * Log the exact payload we are about to send to the AI provider so it can
+     * be inspected end to end. Gated behind config so it can be disabled in
+     * environments where the verbose output (instructions, history, tools) or
+     * potential PII is undesirable.
+     */
+    protected function logOutboundPayload(string $method, array $payload, array $clientConfig = []): void
+    {
+        if (!config('ai-agents.logging.log_outbound_payloads', true)) {
+            return;
+        }
+
+        $context = [
+            'method' => $method,
+            'endpoint' => $this->baseUrl($clientConfig).'/responses',
+            'model' => $payload['model'] ?? null,
+            'stream' => $payload['stream'] ?? false,
+            'tool_count' => is_array($payload['tools'] ?? null) ? count($payload['tools']) : 0,
+            'payload' => $payload,
+        ];
+
+        $channel = config('ai-agents.logging.channel');
+        $logger = $channel ? Log::channel($channel) : Log::getFacadeRoot();
+
+        $logger->info('AI provider request payload', $context);
     }
 
     protected function truncateForLog(string $value, int $max = 4000): string

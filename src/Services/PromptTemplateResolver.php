@@ -56,6 +56,34 @@ class PromptTemplateResolver
         return $this->appendContributorSections($agent, $rendered);
     }
 
+    public function resolveRuntimeInstructionsForConversation(
+        Agent $agent,
+        ?string $conversationContext = null,
+        array $variables = []
+    ): ?string {
+        $base = $this->resolveInstructionsForAgent($agent, $variables);
+        $separator = (string) config('ai-agents.prompts.section_separator', "\n\n");
+        $parts = [];
+
+        if (is_string($base) && trim($base) !== '') {
+            $parts[] = trim($base);
+        }
+
+        $parts[] = trim(implode("\n", [
+            'Conversation handling rules:',
+            '- Answer the latest user message as the live turn you are responding to now.',
+            '- If the latest user message is primarily a greeting, reply with a salutation.',
+            '- If the greeting or latest message refers to earlier discussion, keep continuity with that prior context.',
+            '- When prior context conflicts, seems stale, or the user changes direction, prioritize the more recent messages.',
+        ]));
+
+        if (is_string($conversationContext) && trim($conversationContext) !== '') {
+            $parts[] = trim($conversationContext);
+        }
+
+        return trim(implode($separator, array_filter($parts, fn ($part) => $part !== '')));
+    }
+
     public function defaultTemplateId(): ?int
     {
         return $this->resolveDefaultTemplate()?->id;

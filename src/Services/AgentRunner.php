@@ -70,10 +70,11 @@ class AgentRunner
 
         try {
             $this->conversationStore->truncateIfNeeded($conversation, $this->openAIClient, $clientOptions);
-            $history = $this->conversationStore->historyForModel($conversation);
-            $instructions = $this->promptTemplateResolver->resolveInstructionsForAgent($agent);
+            $conversationContext = $this->conversationStore->historyForPromptContext($conversation, 1);
+            $instructions = $this->promptTemplateResolver->resolveRuntimeInstructionsForConversation($agent, $conversationContext);
+            $currentTurnInput = $this->buildCurrentTurnInput($userMessage);
 
-            $result = $this->executeLoop($agent, $history, $context, $run->id, $conversation->id, $instructions, $clientOptions);
+            $result = $this->executeLoop($agent, $currentTurnInput, $context, $run->id, $conversation->id, $instructions, $clientOptions);
             $identifiers = $this->extractResponseIdentifiers($result['raw_response'] ?? []);
             $this->conversationStore->appendMessage($conversation, [
                 'role' => 'assistant',
@@ -188,19 +189,26 @@ class AgentRunner
         ]);
 
         $this->conversationStore->truncateIfNeeded($conversation, $this->openAIClient, $clientOptions);
-        $history = $this->conversationStore->historyForModel($conversation);
-        $instructions = $this->promptTemplateResolver->resolveInstructionsForAgent($agent);
+        $conversationContext = $this->conversationStore->historyForPromptContext($conversation, 1);
+        $instructions = $this->promptTemplateResolver->resolveRuntimeInstructionsForConversation($agent, $conversationContext);
+        $currentTurnInput = $this->buildCurrentTurnInput($userMessage);
 
         $resolvedTools = $this->agentToolResolver->resolveForAgent($agent);
         $payload = [
             'model' => $agent->model,
-            'input' => $history,
+            'input' => $currentTurnInput,
             'tools' => $resolvedTools['response_tools'],
             'temperature' => $agent->temperature,
             'max_output_tokens' => $agent->max_output_tokens,
             'instructions' => !empty($instructions) ? (string) $instructions : null,
             'text' => $this->resolveTextFormatPayload($agent),
         ];
+
+        // Persist the exact payload sent to the provider so agent_runs.request_payload
+        // reflects the real wire request rather than the inbound user message.
+        AgentRun::query()->whereKey($run->id)->update([
+            'request_payload' => array_filter($payload, fn($v) => $v !== null),
+        ]);
 
         $buffer = '';
         $assistantText = '';
@@ -451,7 +459,7 @@ class AgentRunner
         }
     }
 
-    protected function executeLoop(Agent $agent, array $history, array $context, int $runId, int $conversationId, ?string $instructions = null, array $clientOptions = []): array
+    protected function executeLoop(Agent $agent, array $currentTurnInput, array $context, int $runId, int $conversationId, ?string $instructions = null, array $clientOptions = []): array
     {
         $maxIterations = 8;
         $response = [];
@@ -470,12 +478,19 @@ class AgentRunner
             ];
             if ($previousResponseId) {
                 $payload['previous_response_id'] = $previousResponseId;
-                $payload['input'] = $history;
+                $payload['input'] = $currentTurnInput;
             } else {
-                $payload['input'] = $history;
+                $payload['input'] = $currentTurnInput;
             }
 
-            $response = $this->openAIClient->createResponse(array_filter($payload, fn($v) => $v !== null), $clientOptions);
+            $sentPayload = array_filter($payload, fn($v) => $v !== null);
+            if ($i === 0) {
+                // Persist the exact payload sent to the provider on the first turn
+                // so agent_runs.request_payload reflects the real wire request.
+                AgentRun::query()->whereKey($runId)->update(['request_payload' => $sentPayload]);
+            }
+
+            $response = $this->openAIClient->createResponse($sentPayload, $clientOptions);
             $responseUsage = $this->openAIClient->extractUsage($response);
             $usage = [
                 'prompt_tokens' => $usage['prompt_tokens'] + $responseUsage['prompt_tokens'],
@@ -519,7 +534,7 @@ class AgentRunner
                 throw new \RuntimeException('Cannot continue tool call loop without response id.');
             }
 
-            $history = $toolOutputs;
+            $currentTurnInput = $toolOutputs;
         }
 
         throw new \RuntimeException('Tool loop exceeded iteration limit');
@@ -565,6 +580,14 @@ class AgentRunner
         }
 
         return ['format' => $rf];
+    }
+
+    protected function buildCurrentTurnInput(string $userMessage): array
+    {
+        return [[
+            'role' => 'user',
+            'content' => $userMessage,
+        ]];
     }
 
     protected function extractFunctionCalls(array $response): array
