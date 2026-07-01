@@ -15,6 +15,30 @@ return [
 
     'default_model' => env('AI_AGENTS_DEFAULT_MODEL', 'gpt-4.1-mini'),
 
+    /*
+    |--------------------------------------------------------------------------
+    | Output length limits
+    |--------------------------------------------------------------------------
+    |
+    | max_output_tokens     — global fallback sent to the model when an agent has
+    |                         no per-agent max_output_tokens. Native OpenAI limit.
+    | max_output_characters — hard cap on the final assistant TEXT, enforced by the
+    |                         package (OpenAI has no character limit). The final text
+    |                         is truncated to this many characters. Skipped for
+    |                         structured (json_schema) responses so JSON isn't corrupted.
+    |
+    | Both default to null → no change from prior behaviour (no character cap; the
+    | agent's own max_output_tokens, if any, is used).
+    |
+    */
+    'max_output_tokens' => env('AI_AGENTS_MAX_OUTPUT_TOKENS') !== null
+        ? (int) env('AI_AGENTS_MAX_OUTPUT_TOKENS')
+        : null,
+
+    'max_output_characters' => env('AI_AGENTS_MAX_OUTPUT_CHARACTERS') !== null
+        ? (int) env('AI_AGENTS_MAX_OUTPUT_CHARACTERS')
+        : null,
+
     'logging' => [
         // Log the exact payload sent to the AI provider just before each request.
         'log_outbound_payloads' => (bool) env('AI_AGENTS_LOG_OUTBOUND_PAYLOADS', true),

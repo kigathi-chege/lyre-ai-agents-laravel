@@ -75,6 +75,7 @@ class AgentRunner
             $currentTurnInput = $this->buildCurrentTurnInput($userMessage);
 
             $result = $this->executeLoop($agent, $currentTurnInput, $context, $run->id, $conversation->id, $instructions, $clientOptions);
+            $result['text'] = $this->capOutputCharacters((string) ($result['text'] ?? ''), $agent);
             $identifiers = $this->extractResponseIdentifiers($result['raw_response'] ?? []);
             $this->conversationStore->appendMessage($conversation, [
                 'role' => 'assistant',
@@ -199,7 +200,7 @@ class AgentRunner
             'input' => $currentTurnInput,
             'tools' => $resolvedTools['response_tools'],
             'temperature' => $agent->temperature,
-            'max_output_tokens' => $agent->max_output_tokens,
+            'max_output_tokens' => $this->resolveMaxOutputTokens($agent),
             'instructions' => !empty($instructions) ? (string) $instructions : null,
             'text' => $this->resolveTextFormatPayload($agent),
         ];
@@ -321,7 +322,7 @@ class AgentRunner
                     'input' => $toolOutputs,
                     'tools' => $resolvedTools['response_tools'],
                     'temperature' => $agent->temperature,
-                    'max_output_tokens' => $agent->max_output_tokens,
+                    'max_output_tokens' => $this->resolveMaxOutputTokens($agent),
                     'instructions' => !empty($instructions) ? (string) $instructions : null,
                     'text' => $this->resolveTextFormatPayload($agent),
                 ];
@@ -387,6 +388,11 @@ class AgentRunner
             }
 
             yield "data: [DONE]\n\n";
+
+            // Backstop the persisted/returned text to the character cap. Live SSE
+            // deltas above were already forwarded verbatim; use max_output_tokens to
+            // bound what streams to the client in real time.
+            $assistantText = $this->capOutputCharacters($assistantText, $agent);
 
             $cost = $this->costCalculator->calculate($agent->model, $usage['prompt_tokens'], $usage['completion_tokens']);
             $this->conversationStore->appendMessage($conversation, [
@@ -472,7 +478,7 @@ class AgentRunner
                 'model' => $agent->model,
                 'tools' => $resolvedTools['response_tools'],
                 'temperature' => $agent->temperature,
-                'max_output_tokens' => $agent->max_output_tokens,
+                'max_output_tokens' => $this->resolveMaxOutputTokens($agent),
                 'instructions' => !empty($instructions) ? (string) $instructions : null,
                 'text' => $this->resolveTextFormatPayload($agent),
             ];
@@ -566,6 +572,32 @@ class AgentRunner
      *
      * If the value is already shaped as `{ format: { ... } }` we pass it through.
      */
+    /**
+     * Max output tokens for the model call: the agent's own value if set, else the
+     * global config fallback (AI_AGENTS_MAX_OUTPUT_TOKENS), else null (unchanged).
+     */
+    protected function resolveMaxOutputTokens(Agent $agent): ?int
+    {
+        return $agent->max_output_tokens ?? config('ai-agents.max_output_tokens');
+    }
+
+    /**
+     * Hard-cap the final assistant text to config('ai-agents.max_output_characters').
+     * OpenAI has no character limit, so this is enforced here by truncation. Skipped
+     * when no limit is set, and for structured (json_schema) output — truncating JSON
+     * would corrupt it.
+     */
+    protected function capOutputCharacters(string $text, Agent $agent): string
+    {
+        $limit = (int) config('ai-agents.max_output_characters', 0);
+
+        if ($limit <= 0 || $text === '' || $this->resolveTextFormatPayload($agent) !== null) {
+            return $text;
+        }
+
+        return mb_strlen($text) > $limit ? mb_substr($text, 0, $limit) : $text;
+    }
+
     protected function resolveTextFormatPayload(Agent $agent): ?array
     {
         $metadata = is_array($agent->metadata ?? null) ? $agent->metadata : [];

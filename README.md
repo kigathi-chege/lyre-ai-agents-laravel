@@ -155,6 +155,27 @@ The handler endpoint receives the function-call arguments plus Lyre's run/conver
 - Frontend should call your backend proxy route, not OpenAI directly.
 - If direct OpenAI is needed, use short-lived scoped credentials in trusted environments only.
 
+## Output length limits
+
+Two optional env vars bound how long an agent's reply can be. Both default to
+unset, which keeps the prior behaviour (no character cap; the agent's own
+`max_output_tokens`, if any, is used).
+
+```env
+# Global fallback for max_output_tokens when an agent has none set (native OpenAI limit).
+AI_AGENTS_MAX_OUTPUT_TOKENS=800
+
+# Hard cap on the final assistant TEXT, enforced by the package via truncation
+# (OpenAI has no character limit). Skipped for structured json_schema responses.
+AI_AGENTS_MAX_OUTPUT_CHARACTERS=1000
+```
+
+Precedence for tokens: the agent's own `max_output_tokens` column wins; otherwise
+`AI_AGENTS_MAX_OUTPUT_TOKENS`; otherwise unset. `max_output_characters` truncates the
+final `output_text` (and the stored assistant message) to that many characters. For
+live SSE streaming, deltas are forwarded verbatim, so use `max_output_tokens` to bound
+what streams in real time — the character cap backstops the persisted/returned text.
+
 ## Table naming
 
 By default, the package uses these tables: `agents`, `agent_tools`, `conversations`, `conversation_messages`, `agent_runs`, `usage_logs`, `events`.
